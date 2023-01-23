@@ -1,35 +1,93 @@
-necessary: |
-  sudo apt install zsh clang make python3-pip curl docker.io ssh -y
-nodejs-16: |
-  curl -sSf https://deb.nodesource.com/setup_16.x | sudo sh
-  sudo apt install nodejs -y
-rust: |
-  curl https://sh.rustup.rs -sSf | sh
-docker-compose: |
-  wget https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64
-  chmod +x ./docker-compose-linux-x86_64
-  sudo mv ./docker-compose-linux-x86_64 /bin/docker-compose
-nerdfont: |
-  wget https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FiraCode.zip
-  sudo unzip FiraCode -d /usr/share/fonts/FiraCode
-  cd /usr/share/fonts/FiraCode
-  sudo mkfontscale
-  sudo mkfontdir
-  sudo fc-cache -fv
-codeql: |
-  latest_release=$(curl -Ls -o /dev/null -w %{url_effective}  \
-    https://github.com/github/codeql-cli-binaries/releases/latest | cut -d'/' -f8)
-  mkdir -p ~/cql
-  cd ~/cql
-  wget https://github.com/github/codeql-cli-binaries/releases/download/$latest_release/codeql-linux64.zip
-  wget https://github.com/github/codeql/archive/refs/tags/codeql-cli/$latest_release.zip
-  unzip codeql-linux64.zip $latest_release.zip
-  mv codeql codeql-cli
-  mv codeql-codeql-cli-$latest_release codeql-lib
-  sudo ln -s ~/cql/codeql-cli/codeql /usr/bin/codeql
-neovim: |
-  sudo add-apt-repository ppa:neovim-ppa/stable -y
-  sudo apt update
-  sudo apt install neovim -y
-gef: |
-  bash -c "$(curl -fsSL https://gef.blah.cat/sh)"
+children:
+  apt:
+    prologue: |
+      apt_pkg_list=()
+    script: |
+      sudo apt install -y ${apt_pkg_list[@]}
+    children:
+      zsh:
+        script: |
+          apt_pkg_list+=("zsh")
+      clang:
+        script: |
+          apt_pkg_list+=("clang")
+      make:
+        script: |
+          apt_pkg_list+=("make")
+      python3-pip:
+        script: |
+          apt_pkg_list+=("python3-pip")
+      network-tool:
+        children:
+          curl:
+            script: |
+              apt_pkg_list+=("curl")
+          wget:
+            script: |
+              apt_pkg_list+=("wget")
+          net-tools:
+            script: |
+              apt_pkg_list+=("net-tools")
+      docker:
+        script: |
+          apt_pkg_list+=("docker.io")
+      gdb:
+        script: |
+          apt_pkg_list+=("gdb")
+      tmux:
+        script: |
+          apt_pkg_list+=("tmux")
+      neovim:
+        script: |
+          apt_pkg_list+=("neovim")
+        prologue: |
+          sudo add-apt-repository ppa:neovim-ppa/stable -y
+          sudo apt update
+      nodejs:
+        prologue: |
+          DISTRO=$(lsb_release -c -s)
+          keyring='/usr/share/keyrings'
+          node_key_url="https://deb.nodesource.com/gpgkey/nodesource.gpg.key"
+          local_node_key="$keyring/nodesource.gpg"
+          sudo bash -c "curl -s $node_key_url | gpg --dearmor | tee $local_node_key >/dev/null"
+          sudo bash -c "echo 'deb [signed-by=$local_node_key] https://deb.nodesource.com/node_16.x ${DISTRO} main' > /etc/apt/sources.list.d/nodesource.list"
+          sudo bash -c "echo 'deb-src [signed-by=$local_node_key] https://deb.nodesource.com/node_16.x ${DISTRO} main' >> /etc/apt/sources.list.d/nodesource.list"
+          sudo apt update
+      ripgrep:
+        script: |
+          apt_pkg_list+=("ripgrep")
+  rust:
+    script: |
+      curl https://sh.rustup.rs -sSf | sh
+  docker-compose:
+    script: |
+      wget https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64
+      chmod +x ./docker-compose-linux-x86_64
+      sudo mv ./docker-compose-linux-x86_64 /bin/docker-compose
+  nerdfont:
+    script: |
+      CURR="$(pwd)"
+      wget https://github.com/ryanoasis/nerd-fonts/releases/latest/download/FiraCode.zip
+      sudo unzip FiraCode -d /usr/share/fonts/FiraCode
+      cd /usr/share/fonts/FiraCode
+      sudo mkfontscale
+      sudo mkfontdir
+      sudo fc-cache -fv
+      cd CURR
+      rm FiraCode.zip
+  codeql:
+    script: |
+      latest_release=$(curl -Ls -o /dev/null -w %{url_effective} \
+        https://github.com/github/codeql-cli-binaries/releases/latest | cut -d'/' -f8)
+      mkdir -p ~/cql
+      cd ~/cql
+      wget https://github.com/github/codeql-cli-binaries/releases/download/$latest_release/codeql-linux64.zip
+      wget https://github.com/github/codeql/archive/refs/tags/codeql-cli/$latest_release.zip
+      unzip codeql-linux64.zip $latest_release.zip
+      mv codeql codeql-cli
+      mv codeql-codeql-cli-$latest_release codeql-lib
+      sudo ln -s ~/cql/codeql-cli/codeql /usr/bin/codeql
+      rm codeql-linux64.zip $latest_release.zip
+  gef:
+    script: |
+      bash -c "$(curl -fsSL https://gef.blah.cat/sh)"

@@ -1,11 +1,12 @@
-import termios
+import os
 import sys
-import struct
+import termios
+import abc
 import subprocess
-import fcntl
+from enum import Enum
 
 
-class Color():
+class Color:
     FG_Black = 30
     FG_Red = 31
     FG_Green = 32
@@ -25,30 +26,140 @@ class Color():
     BG_White = 47
 
 
-class Keycode():
+class Key:
+    def readchar() -> str:
+        ch = sys.stdin.read(1)
+        return ch
+
+    def readkey() -> str:
+        c1 = Key.readchar()
+        if c1 in "\x03":
+            raise KeyboardInterrupt
+        if c1 != "\x1B":
+            return c1
+        c2 = Key.readchar()
+        if c2 not in "\x4F\x5B":
+            return c1 + c2
+        c3 = Key.readchar()
+        if c3 not in "\x31\x32\x33\x35\x36":
+            return c1 + c2 + c3
+        c4 = Key.readchar()
+        if c4 not in "\x30\x31\x33\x34\x35\x37\x38\x39":
+            return c1 + c2 + c3 + c4
+        c5 = Key.readchar()
+        return c1 + c2 + c3 + c4 + c5
+
+    def send(buf: str | bytes, flush: bool = False) -> None:
+        sys.stdout.write(buf)
+        if flush:
+            sys.stdout.flush()
+
+    def send_color(buf, color) -> None:
+        tmp = "%s%dm%s%s%dm" % (Key.ESCAPE_STR, color, buf, Key.ESCAPE_STR, Color.Reset)
+        Key.send(tmp)
+
+    def send_color256(buf, color) -> None:
+        tmp = "%s48;5;%dm%s%s%dm" % (
+            Key.ESCAPE_STR,
+            color,
+            buf,
+            Key.ESCAPE_STR,
+            Color.Reset,
+        )
+        Key.send(tmp)
+
     def setpos(row: int = 1, col: int = 1) -> str:
-        if row == 1 and col == 1:
-            return Keycode.ESCAPE_STR + 'H'
-        return '%s%d;%dH' % (Keycode.ESCAPE_STR,  row, col)
+        if row <= 1 and col <= 1:
+            tmp = Key.ESCAPE_STR + "H"
+        tmp = "%s%d;%dH" % (Key.ESCAPE_STR, row, col)
+        Key.send(tmp, True)
 
     ESCAPE_STR = "\x1b["
     CLEAN = ESCAPE_STR + "2J"
-    UP = ESCAPE_STR + '\x41'
-    DOWN = ESCAPE_STR + '\x42'
-    RIGHT = ESCAPE_STR + '\x43'
-    LEFT = ESCAPE_STR + '\x44'
-    CLEAN_SET = CLEAN + ESCAPE_STR + 'H'
+    UP = ESCAPE_STR + "\x41"
+    DOWN = ESCAPE_STR + "\x42"
+    RIGHT = ESCAPE_STR + "\x43"
+    LEFT = ESCAPE_STR + "\x44"
+    CLEAN_SET = CLEAN + ESCAPE_STR + "H"
     ARROW = [UP, DOWN, RIGHT, LEFT]
 
 
-class RawDialog():
-    DIR = {
-        Keycode.UP: (0, -1),
-        Keycode.DOWN: (0, 1),
-        Keycode.RIGHT: (1, 0),
-        Keycode.LEFT: (-1, 0),
-    }
+class SelectType(Enum):
+    Empty = (" ", Color.Reset)
+    Some = ("+", Color.BG_Cyan)
+    Full = ("*", Color.BG_Blue)
 
+
+class Card:
+    def __init__(self, name: str = "", value: dict = None) -> None:
+        self.parent: Card = None
+        self._select: SelectType = SelectType.Empty
+        self.name: str = name
+        self.children: list[Card] = []
+        self.script: str = value.get("script", "")
+        self.prologue: str = value.get("prologue", "")
+
+    def generate(self) -> tuple[str]:
+        """Generate the script content."""
+        return (self.prologue, self.script)
+
+    @property
+    def select(self) -> SelectType:
+        return self._select
+
+    @select.setter
+    def select(self, new_type: SelectType) -> None:
+        self._select = new_type
+
+
+class Cassette(Card):
+    def parse(name, value: dict) -> "Cassette":
+        if value != None and "children" in value:
+            curr = Cassette(name=name, value=value)
+            for sub_name, sub_val in value["children"].items():
+                child = Cassette.parse(sub_name, sub_val)
+                child.parent = curr
+                curr.children.append(child)
+        else:
+            if value == None:
+                value = {}
+            curr = Card(name=name, value=value)
+        return curr
+
+    def __init__(self, name, value) -> None:
+        super().__init__(name, value)
+
+    def generate(self) -> tuple[str]:
+        """Generate the script content, first expanding the script from children."""
+        run_prologue = self.prologue
+        run_script = ""
+        for child in self.children:
+            if child.select != SelectType.Empty:
+                child_prologue, child_script = child.generate()
+                run_prologue += child_prologue
+                run_script += child_script
+        run_script += self.script
+        return (run_prologue, run_script)
+
+    @property
+    def select(self) -> SelectType:
+        cnt = sum([1 for item in self.children if item.select != SelectType.Empty])
+        if cnt == len(self.children):
+            self._select = SelectType.Full
+        elif cnt == 0:
+            self._select = SelectType.Empty
+        else:
+            self._select = SelectType.Some
+        return self._select
+
+    @select.setter
+    def select(self, new_type: SelectType) -> None:
+        self._select = new_type
+        for card in self.children:
+            card.select = new_type
+
+
+class RawDialog(abc.ABC):
     def init_termios(self) -> None:
         fd_in = sys.stdin.fileno()
         # 保留原先的 terminal 設定值
@@ -57,152 +168,124 @@ class RawDialog():
         # 設定 terminal 的功能
         term[3] &= ~(termios.ICRNL | termios.IXON)
         term[3] &= ~(termios.OPOST)
-        term[3] &= ~(termios.ICANON | termios.ECHO |
-                     termios.IGNBRK | termios.BRKINT)
+        term[3] &= ~(termios.ICANON | termios.ECHO | termios.IGNBRK | termios.BRKINT)
         termios.tcsetattr(fd_in, termios.TCSAFLUSH, term)
-
-        s = struct.pack('HHHH', 0, 0, 0, 0)
-        t = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, s)
-        self.row, self.col, _, _ = struct.unpack('HHHH', t)
 
     def __init__(self) -> None:
         self.init_termios()
-        self.running = True
-        self.x = 1
-        self.y = 1
-        self.x_range = (1, self.col)
-        self.y_range = (1, self.row)
-        self.send(Keycode.CLEAN)
-
-    def send(self, buf: str | bytes) -> None:
-        sys.stdout.write(buf)
-        sys.stdout.flush()
-
-    def send_color(self, buf, color) -> None:
-        tmp = '%s%dm%s%s%dm' % (
-            Keycode.ESCAPE_STR, color, buf, Keycode.ESCAPE_STR, Color.Reset)
-        self.send(tmp)
-
-    def send_color256(self, buf, color):
-        tmp = '%s48;5;%dm'(
-            Keycode.ESCAPE_STR, color, buf, Keycode.ESCAPE_STR, Color.Reset)
-        self.send(tmp)
+        self.x, self.y = 1, 1
+        term_size = os.get_terminal_size()
+        self.size = (term_size.columns, term_size.lines)
 
     def flushpos(self) -> None:
-        self.send(Keycode.setpos(self.y, self.x))
-
-    def move(self, arrow: str) -> None:
-        self.x = max(self.x_range[0], min(
-            self.x+RawDialog.DIR[arrow][0], self.x_range[1]))
-        self.y = max(self.y_range[0], min(
-            self.y+RawDialog.DIR[arrow][1], self.y_range[1]))
-        self.flushpos()
-
-    def readchar(self) -> str:
-        ch = sys.stdin.read(1)
-        return ch
-
-    def readkey(self) -> str:
-        c1 = self.readchar()
-        if c1 in '\x03':
-            raise KeyboardInterrupt
-        if c1 != "\x1B":
-            return c1
-        c2 = self.readchar()
-        if c2 not in "\x4F\x5B":
-            return c1 + c2
-        c3 = self.readchar()
-        if c3 not in "\x31\x32\x33\x35\x36":
-            return c1 + c2 + c3
-        c4 = self.readchar()
-        if c4 not in "\x30\x31\x33\x34\x35\x37\x38\x39":
-            return c1 + c2 + c3 + c4
-        c5 = self.readchar()
-        return c1 + c2 + c3 + c4 + c5
-
-    def key_event(self, key: str) -> None:
-        if key == 'q':
-            raise KeyboardInterrupt
-        elif key in Keycode.ARROW:
-            self.move(key)
-
-    def display(self) -> None:
-        pass
+        Key.setpos(self.y, self.x)
 
     def run(self) -> None:
-        while self.running:
+        """TUI main loop"""
+        while True:
+            self.display()
             try:
-                key = self.readkey()
+                key = Key.readkey()
                 self.key_event(key)
             except KeyboardInterrupt:
-                termios.tcsetattr(
-                    sys.stdin, termios.TCSADRAIN, self.old_settings)
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
                 break
+
+    @abc.abstractmethod
+    def display(self):
+        pass
+
+    @abc.abstractmethod
+    def key_event(self, key: Key):
+        pass
 
 
 class Kickback(RawDialog):
-    bottom_msg = 'Tip: <Space> select. (S)tart script. Select (A)ll. (R)everse select. (q)uit'
+    banner: str = """ _      _         _        _                    _
+| |    (_)       | |      | |                  | |
+| |  _  _   ____ | |  _   | |__   _____   ____ | |  _
+| |_/ )| | / ___)| |_/ )  |  _ \ (____ | / ___)| |_/ )
+|  _ ( | |( (___ |  _ (   | |_) )/ ___ |( (___ |  _ (
+|_| \_)|_| \____)|_| \_)  |____/ \_____| \____)|_| \_)
 
-    def __init__(self, menu_list) -> None:
+"""
+    offset_y = banner.count("\n")
+    bottom_msg: str = (
+        "Tip: <Space> select. (S)tart script. (C)heck current script. (q)uit~"
+    )
+
+    def __init__(self, yml: dict) -> None:
         super().__init__()
-        self.menu_list = menu_list
-        # show menu
-        self.display()
-        # set cursor available range
+        self.root: Card = Cassette.parse("", yml)
+        self.curr: Card = self.root
+        self.update_area()
+
+    def update_area(self) -> None:
+        """Set cursor available area"""
         self.x, self.y = 2, 1
-        self.x_range = (2, 2)
-        self.y_range = (1, len(menu_list))
-        self.display()
+        self.max_y = len(self.curr.children)
 
     def key_event(self, key: str) -> None:
-        super().key_event(key)
-        if key == ' ':
-            pos = self.y - 1
-            self.menu_list[pos][0] = not self.menu_list[pos][0]
-            self.send(Keycode.setpos(self.y, 1))
-            self.set_line(self.menu_list[pos])
-            self.flushpos()
-        elif key == 'S':
-            if self.run_cmd():
-                raise KeyboardInterrupt
-        elif key == 'A':
-            for item in self.menu_list:
-                item[0] = True
-            self.display()
-        elif key == 'R':
-            for item in self.menu_list:
-                item[0] = not item[0]
-            self.display()
+        """Kickback TUI keydown event"""
+        if key == "q":
+            raise KeyboardInterrupt
+        elif key == " ":
+            if self.curr_card.select == SelectType.Empty:
+                self.curr_card.select = SelectType.Full
+            else:
+                self.curr_card.select = SelectType.Empty
+        elif key == "S":
+            self.run_cmd()
+        elif key == "C":
+            Key.send(Key.CLEAN_SET, True)
+            combine_sh = "".join(self.root.generate())
+            print(combine_sh)
+            Key.readkey()
+        # maybe the arrow command cat be more OO.
+        elif key == Key.UP:
+            self.y = max(1, self.y - 1)
+        elif key == Key.DOWN:
+            self.y = min(self.y + 1, self.max_y)
+        elif key == Key.LEFT:
+            if self.curr.parent != None:
+                self.curr = self.curr.parent
+                self.update_area()
+        elif key == Key.RIGHT:
+            if len(self.curr_card.children) != 0:
+                self.curr = self.curr_card
+                self.update_area()
+
+    @property
+    def curr_card(self) -> Card:
+        return self.curr.children[self.y - 1]
 
     def run_cmd(self):
-        combine_sh = ''
-        for item in self.menu_list:
-            if item[0] == True:
-                combine_sh += item[2]
-        self.send(Keycode.CLEAN_SET)
-        termios.tcsetattr(
-            sys.stdin, termios.TCSADRAIN, self.old_settings)
+        """Run script from root node"""
+        combine_sh = "".join(self.root.generate())
+        Key.send(Key.CLEAN_SET, True)
         # https://stackoverflow.com/a/567687
-        proc = subprocess.Popen(['/bin/bash', '-c', combine_sh])
+        proc = subprocess.Popen(["/bin/bash", "-c", combine_sh])
         proc.wait()
-        return True
+        raise KeyboardInterrupt
 
-    def set_line(self, item):
-        self.send('[%s] ' % ('v' if item[0] else ' '))
-        color = Color.BG_Blue if item[0] else Color.BG_Black
-        self.send_color('%s\r\n' % (item[1]), color)
+    def show_card(self, card: Card) -> None:
+        """Print the card info"""
+        Key.send("[%s] " % card.select.value[0])
+        Key.send_color("%s" % (card.name), card.select.value[1])
+        if len(card.children) != 0:
+            Key.send(" >")
+        Key.send("\r\n", True)
 
     def display(self) -> None:
-        self.send(Keycode.CLEAN_SET)
-        for item in self.menu_list:
-            self.set_line(item)
-        # show bottom message
-        self.send(Keycode.setpos(999, 1))
-        self.send(self.bottom_msg)
+        """Clean the screen and print a list of cards from the current cassette"""
+        # clean screen and print the banner
+        Key.send(Key.CLEAN_SET + Kickback.banner)
+        for card in self.curr.children:
+            self.show_card(card)
+        # print bottom message
+        Key.setpos(999, 1)
+        Key.send(self.bottom_msg)
         self.flushpos()
 
-
-if __name__ == '__main__':
-    menu: list
-    kb = Kickback(menu)
-    kb.run()
+    def flushpos(self) -> None:
+        Key.setpos(self.y + Kickback.offset_y, self.x)
