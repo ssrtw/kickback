@@ -33,11 +33,11 @@ def pack_script():
         kb_src = f.read()
     pos = kb_src.find(COMPRESS_DATA_STR) + len(COMPRESS_DATA_STR)
     kb_src = kb_src[:pos] + f' = b"{data}"' + kb_src[pos:]
-    kb_minifiy = python_minifier.minify(
+    kb_minify = python_minifier.minify(
         kb_src, remove_literal_statements=True, rename_globals=True
     )
     with open("./kb.py", "w") as mini_file:
-        mini_file.write(kb_minifiy)
+        mini_file.write(kb_minify)
 
 
 def run_script():
