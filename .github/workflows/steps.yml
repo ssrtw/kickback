@@ -1,0 +1,29 @@
+name: Publish
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build:
+    name: Publish script
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.10' 
+    - name: Install packages
+      run: |
+        python -m pip install --upgrade pip
+        pip --no-cache-dir install pyyaml python_minifier
+    - run: |
+        python packer.py -p
+    - name: Upload minify script to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.KICKBACK_GITHUB_TOKEN }}
+        file: '{kb,kickback}.py'
+        tag: ${{ github.ref }}
+        overwrite: true
+        file_glob: true
