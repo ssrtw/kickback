@@ -4,6 +4,8 @@ import termios
 import abc
 import subprocess
 from enum import Enum
+import yaml
+import zlib
 
 
 class Color:
@@ -214,9 +216,9 @@ class Kickback(RawDialog):
         "Tip: <Space> select. (S)tart script. (C)heck current script. (q)uit~"
     )
 
-    def __init__(self, yml: dict) -> None:
+    def __init__(self, data: dict) -> None:
         super().__init__()
-        self.root: Card = Cassette.parse("", yml)
+        self.root: Card = Cassette.parse("", data)
         self.curr: Card = self.root
         self.update_area()
 
@@ -289,3 +291,10 @@ class Kickback(RawDialog):
 
     def flushpos(self) -> None:
         Key.setpos(self.y + Kickback.offset_y, self.x)
+
+
+if __name__ == "__main__":
+    compress_data: bytes
+    if "compress_data" in globals():
+        raw_data = yaml.safe_load(zlib.decompress(compress_data))
+        Kickback(raw_data).run()

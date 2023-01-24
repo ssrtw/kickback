@@ -1,38 +1,60 @@
 import argparse
-import json
+from argparse import BooleanOptionalAction as boa
 import yaml
+import zlib
+import codecs
 
-MENU_LIST_STR = 'menu: list'
+COMPRESS_DATA_STR = "compress_data: bytes"
+
+parser = argparse.ArgumentParser(description="Pack Kickback TUI script.")
+parser.add_argument("-r", "--run", help="run kickback", action=boa, default=True)
+parser.add_argument("-p", "--pack", help="pack kickback", action=boa)
 
 
-def load_script() -> dict:
-    with open('script.yml', 'r') as file:
-        script: dict = yaml.load(file, Loader=yaml.FullLoader)
-    return script
+def compress_str(raw_str: str) -> str:
+    compress_bytes = zlib.compress(raw_str.encode(), level=9)
+    escape_str = codecs.escape_encode(compress_bytes)[0].decode()
+    return escape_str.replace('"', '\\"')
+
+
+def read_script(compress=False) -> dict | bytes:
+    with open("script.yml", "r") as file:
+        if compress:
+            return compress_str(file.read())
+        else:
+            return yaml.safe_load(file)
+
+
+def pack_script():
+    import python_minifier
+
+    data: bytes = read_script(True)
+    with open("./kickback.py", "r") as f:
+        kb_src = f.read()
+    pos = kb_src.find(COMPRESS_DATA_STR) + len(COMPRESS_DATA_STR)
+    kb_src = kb_src[:pos] + f' = b"{data}"' + kb_src[pos:]
+    kb_minifiy = python_minifier.minify(
+        kb_src, remove_literal_statements=True, rename_globals=True
+    )
+    with open("./kb.py", "w") as mini_file:
+        mini_file.write(kb_minifiy)
+
+
+def run_script():
+    from kickback import Kickback
+
+    data: dict = read_script()
+    kb = Kickback(data)
+    kb.run()
 
 
 def main():
-    parser = argparse.ArgumentParser(description='init linux TUI tool.')
-    parser.add_argument('-d', '--debug', help='debug script', type=bool, default=True)
-    parser.add_argument('-b', '--build', help='build minifier script', type=bool)
     args = parser.parse_args()
-    menu: dict = load_script()
-
-    if args.debug == True:
-        from kickback import Kickback
-        kb = Kickback(menu)
-        kb.run()
-    else:
-        import python_minifier
-
-        with open('./kickback.py', 'r', encoding='utf-8') as f:
-            kickback_source = f.read()
-            menu_str = json.dumps(menu).replace('false,', 'False,')
-            kickback_source = kickback_source.replace(MENU_LIST_STR, MENU_LIST_STR + '=' + menu_str)
-            kickback_mini = python_minifier.minify(kickback_source, rename_globals=True)
-            with open('./kb.py', 'w') as mini_file:
-                mini_file.write(kickback_mini)
+    if args.pack:
+        pack_script()
+    elif args.run:
+        run_script()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
